@@ -347,7 +347,7 @@ else
 fi
 
 if [ "$CLEANUP" != 'no' ]; then
-	trap 'cleanup; exit 0' EXIT
+	trap 'cleanup' EXIT
 	trap 'cleanup; exit 130' HUP INT TERM
 fi
 
