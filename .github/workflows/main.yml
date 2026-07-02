@@ -1,40 +1,72 @@
 name: CI
 
 on:
-  - pull_request
-  - push
-
-jobs:
-  test:
-    runs-on: ubuntu-24.04-arm
-    strategy:
-      matrix:
-        branch:
+  pull_request:
+  push:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Select Alpine Branch to Build'
+        required: true
+        default: 'master'
+        type: choice
+        options:
           - latest-stable
           - edge
           - v3.24
 
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        branch: [latest-stable, edge, v3.24]
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout Repository
+        uses: actions/checkout@v6
 
-      - name: Download and Extract Mesa for Android Container
+      - name: Set up QEMU for ARM64 Support
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Handle Custom Manual Branch Input
+        id: select-branch
         run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "CHOSEN_BRANCH=${{ github.event.inputs.branch }}" >> $GITHUB_ENV
+          else
+            echo "CHOSEN_BRANCH=${{ matrix.branch }}" >> $GITHUB_ENV
+          fi
+
+      - name: Build rootfs tarball with integrated Mesa
+        run: |
+          # 1. Create a script to pull and extract Mesa inside the container rootfs target
+          cat << 'EOF' > ./example/install_with_mesa.sh
+          #!/bin/sh
+          # Download and Extract Mesa directly into the root of the Alpine target
           wget -q https://github.com/lfdevs/mesa-for-android-container/releases/download/mesa-26.2.0-devel-20260621/mesa-for-android-container_26.2.0-devel-20260621_alpine_3.24_arm64.tar.gz
-          sudo tar -xzf mesa-for-android-container_26.2.0-devel-20260621_alpine_3.24_arm64.tar.gz -C /
+          tar -xzf mesa-for-android-container_26.2.0-devel-20260621_alpine_3.24_arm64.tar.gz -C /
+          rm mesa-for-android-container_26.2.0-devel-20260621_alpine_3.24_arm64.tar.gz
+          
+          # Append your original installer script
+          ./example/install.sh
+          EOF
+          
+          chmod +x ./example/install_with_mesa.sh
 
-      - name: Build rootfs tarball using script from file
-        run: |
+          # 2. Run the build utilizing QEMU ARM64 architecture configurations
           sudo ./alpine-make-rootfs \
-            --branch ${{ matrix.branch }} \
+            --branch ${{ env.CHOSEN_BRANCH }} \
             --packages 'ruby sqlite' \
             --script-chroot \
-            example-$(date +%Y%m%d).tar.gz -- ./example/install.sh
+            example-$(date +%Y%m%d).tar.gz -- ./example/install_with_mesa.sh
 
       - name: Build rootfs using script from stdin
         run: |
           cd example
           sudo ../alpine-make-rootfs \
-            --branch ${{ matrix.branch }} \
+            --branch ${{ env.CHOSEN_BRANCH }} \
             --packages 'ruby sqlite' \
             --script-chroot \
             rootfs - < install.sh
