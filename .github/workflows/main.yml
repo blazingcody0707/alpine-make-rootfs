@@ -1,73 +1,40 @@
-name: Build Custom Alpine RootFS for Vectras VM
+name: CI
 
 on:
-  workflow_dispatch:
+  - pull_request
+  - push
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      matrix:
+        branch:
+          - latest-stable
+          - edge
+          - v3.24
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Set up QEMU Static Binaries for Cross-Compilation
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Download alpine-make-rootfs and Dependencies
+      - name: Download and Extract Mesa for Android Container
         run: |
-          wget https://raw.githubusercontent.com/alpinelinux/alpine-make-rootfs/refs/heads/master/alpine-make-rootfs
-          chmod +x alpine-make-rootfs
-          wget https://githubusercontent.com
+          wget -q https://github.com/lfdevs/mesa-for-android-container/releases/download/mesa-26.2.0-devel-20260621/mesa-for-android-container_26.2.0-devel-20260621_alpine_3.24_arm64.tar.gz
+          sudo tar -xzf mesa-for-android-container_26.2.0-devel-20260621_alpine_3.24_arm64.tar.gz -C /
 
-      - name: Download lfdevs Mesa for Android Container
+      - name: Build rootfs tarball using script from file
         run: |
-          wget https://github.com/lfdevs/mesa-for-android-container/releases/download/mesa-26.2.0-devel-20260621/mesa-for-android-container_26.2.0-devel-20260621_alpine_3.24_arm64.tar.gz -O mesa-android.tar.gz
-
-      - name: Generate Custom RootFS using alpine-make-rootfs
-        run: |
-          # Create targets folder
-          mkdir -p output_rootfs
-          
-          # Run the builder mapping packages for QEMU target architectures inside the alpine instance
           sudo ./alpine-make-rootfs \
-            --branch v3.24 \
-            --packages "bash qemu-img qemu-system-x86_64 qemu-system-i386 qemu-system-aarch64 qemu-system-ppc mesa-egl mesa-gles" \
-            output_rootfs/ \
-            - << 'EOF'
-          # --- INSIDE CHROOT CHANNELS CONFIG ---
-          # Force mirror sources to strict Main 3.24 mappings as instructed
-          echo "https://dl-cdn.alpinelinux.org/alpine/v3.24/main" > /etc/apk/repositories
-          echo "https://dl-cdn.alpinelinux.org/alpine/v3.24/main" >> /etc/apk/repositories
-          
-          # Force use bash for the environment updates
-          sed -i 's|/bin/sh|/bin/bash|g' /etc/passwd
-          
-          # Inject KGSL Turnip + Zink variables directly to default and skeleton profiles
-          echo 'export MESA_LOADER_DRIVER_OVERRIDE=zink' >> /etc/bash/bashrc
-          echo 'export GALLIUM_DRIVER=zink' >> /etc/bash/bashrc
-          echo 'export TU_DEBUG=kgsl' >> /etc/bash/bashrc
-          
-          echo 'export MESA_LOADER_DRIVER_OVERRIDE=zink' >> /root/.bashrc
-          echo 'export GALLIUM_DRIVER=zink' >> /root/.bashrc
-          echo 'export TU_DEBUG=kgsl' >> /root/.bashrc
-          EOF
+            --branch ${{ matrix.branch }} \
+            --packages 'ruby sqlite' \
+            --script-chroot \
+            example-$(date +%Y%m%d).tar.gz -- ./example/install.sh
 
-      - name: Extract and Implement lfdevs Custom Mesa Drivers into RootFS
+      - name: Build rootfs using script from stdin
         run: |
-          # Unpack the downloaded specialized mesa archive directly into the generated rootfs directories override
-          sudo tar -xzvf mesa-android.tar.gz -C output_rootfs/
-
-      - name: Package Extractable RootFS Archive
-        run: |
-          cd output_rootfs
-          # Compress everything into a tarball ready for Document Provider injection
-          sudo tar -czf ../alpine-3.24-vectras-arm64.tar.gz .
-          cd ..
-
-      - name: Upload Finished RootFS Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: alpine-vectras-rootfs
-          path: alpine-3.24-vectras-arm64.tar.gz
+          cd example
+          sudo ../alpine-make-rootfs \
+            --branch ${{ matrix.branch }} \
+            --packages 'ruby sqlite' \
+            --script-chroot \
+            rootfs - < install.sh
